@@ -5,9 +5,9 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from . import compat, swap
+from . import compat, paths, shortcuts, swap
 from .steam import find_steam_path, installed_games, find_executables
-from .stub import Target
+from .stub import Target, build_selector
 
 COMPAT_PACE_SECONDS = 0.3  # intervalo entre consultas à Steam Store, para não estourar o limite de requisições
 
@@ -16,8 +16,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("SteamSwap")
-        self.geometry("980x580")
-        self.minsize(820, 500)
+        self.geometry("980x660")
+        self.minsize(860, 560)
 
         self.steam = find_steam_path()
         self.games = installed_games(self.steam) if self.steam else []
@@ -31,11 +31,13 @@ class App(tk.Tk):
 
         self.search = tk.StringVar()
         self.host_exe = tk.StringVar()
+        self.target_name = tk.StringVar()
         self.kind = tk.StringVar(value="exe")
         self.exe_path = tk.StringVar()
         self.steam_target = tk.StringVar()
         self.args = tk.StringVar()
         self.follow = tk.BooleanVar(value=True)
+        self.make_shortcut = tk.BooleanVar(value=True)
         self.filter_compat = tk.BooleanVar(value=True)
         self.compat_status = tk.StringVar(value="")
         self.status = tk.StringVar(
@@ -77,14 +79,38 @@ class App(tk.Tk):
         self.tree.bind("<<TreeviewSelect>>", lambda _e: self._on_select())
 
         right = ttk.Frame(self)
-        right.pack(side="right", fill="y", padx=(5, 10), pady=10)
+        right.pack(side="right", fill="both", expand=False, padx=(5, 10), pady=10)
 
         ttk.Label(right, text="Executável que a Steam abre neste jogo").pack(anchor="w")
         self.exe_combo = ttk.Combobox(right, textvariable=self.host_exe, width=52, state="readonly")
         self.exe_combo.pack(fill="x", **pad)
 
         ttk.Separator(right).pack(fill="x", pady=8)
-        ttk.Label(right, text="2. Destino (o que abrir de verdade)").pack(anchor="w")
+        ttk.Label(right, text="2. Destinos deste hospedeiro").pack(anchor="w")
+        self.targets_tree = ttk.Treeview(right, columns=("name", "detail", "default", "shortcut"),
+                                         show="headings", selectmode="browse", height=5)
+        for col, text, w in (("name", "Nome", 110), ("detail", "Abre", 170), ("default", "Padrão", 55),
+                            ("shortcut", "Atalho", 55)):
+            self.targets_tree.heading(col, text=text)
+            self.targets_tree.column(col, width=w, anchor="w")
+        self.targets_tree.pack(fill="x", pady=4)
+        self.targets_tree.bind("<<TreeviewSelect>>", lambda _e: self._sync_target_buttons())
+
+        tbtns = ttk.Frame(right)
+        tbtns.pack(fill="x")
+        self.btn_default = ttk.Button(tbtns, text="Definir padrão", command=self._set_default_target)
+        self.btn_default.pack(side="left")
+        self.btn_remove_target = ttk.Button(tbtns, text="Remover", command=self._remove_target)
+        self.btn_remove_target.pack(side="left", padx=6)
+        self.btn_reshortcut = ttk.Button(tbtns, text="Recriar atalho", command=self._recreate_shortcut)
+        self.btn_reshortcut.pack(side="left")
+
+        ttk.Separator(right).pack(fill="x", pady=8)
+        ttk.Label(right, text="Adicionar destino").pack(anchor="w")
+        name_row = ttk.Frame(right)
+        name_row.pack(fill="x", **pad)
+        ttk.Label(name_row, text="Nome:").pack(side="left")
+        ttk.Entry(name_row, textvariable=self.target_name, width=40).pack(side="left", padx=6, fill="x", expand=True)
 
         row = ttk.Frame(right)
         row.pack(fill="x", **pad)
@@ -110,19 +136,23 @@ class App(tk.Tk):
             right, text="Continuar rodando enquanto houver processos da pasta do destino\n"
                         "(necessário se o destino abre um launcher e fecha)",
             variable=self.follow)
+        self.shortcut_chk = ttk.Checkbutton(
+            right, text="Criar atalho na Área de Trabalho para este destino", variable=self.make_shortcut)
+
+        self.btn_add_target = ttk.Button(right, text="+ Adicionar destino", command=self._add_target)
+        self.btn_add_target.pack(side="bottom", pady=(4, 0))
+        self.shortcut_chk.pack(side="bottom", anchor="w", padx=8)
 
         ttk.Separator(right).pack(fill="x", pady=8, side="bottom")
-        btns = ttk.Frame(right)
-        btns.pack(side="bottom", fill="x")
-        self.btn_apply = ttk.Button(btns, text="Aplicar troca", command=self._apply)
-        self.btn_apply.pack(side="left", padx=(0, 8))
-        self.btn_restore = ttk.Button(btns, text="Restaurar original", command=self._restore)
-        self.btn_restore.pack(side="left")
+        self.btn_restore = ttk.Button(right, text="Restaurar original (remove todos os destinos)",
+                                      command=self._restore)
+        self.btn_restore.pack(side="bottom", pady=(4, 0))
         self.info = ttk.Label(right, text="", wraplength=430, justify="left", foreground="#444")
         self.info.pack(side="bottom", fill="x", pady=8)
 
         ttk.Label(self, textvariable=self.status, relief="sunken", anchor="w").pack(side="bottom", fill="x")
         self._sync_kind()
+        self._sync_target_buttons()
 
     def _sync_kind(self):
         for w in (self.exe_row, self.steam_row, self.args_row, self.follow_chk):
@@ -133,6 +163,15 @@ class App(tk.Tk):
             self.follow_chk.pack(anchor="w", padx=8, pady=4)
         else:
             self.steam_row.pack(fill="x", padx=8, pady=4)
+
+    def _sync_target_buttons(self):
+        has_sel = bool(self.targets_tree.selection())
+        appid = self._selected_id()
+        rec = self.records.get(appid) if appid is not None else None
+        can_remove = has_sel and rec is not None and len(rec.targets) > 1
+        for btn, ok in ((self.btn_default, has_sel), (self.btn_remove_target, can_remove),
+                        (self.btn_reshortcut, has_sel)):
+            btn.state(["!disabled"] if ok else ["disabled"])
 
     # ---------- compatibilidade (Steam Store: controle total + Remote Play Together) ----------
     def _compat_label(self, appid: int) -> str:
@@ -227,25 +266,39 @@ class App(tk.Tk):
         s = self.tree.selection()
         return int(s[0]) if s else None
 
+    def _target_detail(self, t: dict) -> str:
+        return t["path"] if t["kind"] == "exe" else f"jogo Steam {t['steam_appid']}"
+
+    def _refresh_targets_tree(self, rec):
+        self.targets_tree.delete(*self.targets_tree.get_children())
+        if not rec:
+            return
+        for tid, t in rec.targets.items():
+            self.targets_tree.insert(
+                "", "end", iid=tid,
+                values=(t["name"], self._target_detail(t), "sim" if tid == rec.default_id else "",
+                       "sim" if t.get("shortcut") else ""))
+
     def _on_select(self):
         appid = self._selected_id()
         if appid is None:
             return
         game = self.by_id[appid]
         rec = self.records.get(appid)
+        self._refresh_targets_tree(rec)
+        n_existing = len(rec.targets) if rec else 0
+        self.target_name.set(f"Destino {n_existing + 1}")
         if rec:
             self.exe_combo["values"] = [rec.host_exe]
             self.host_exe.set(rec.host_exe)
-            t = rec.target
-            dest = t["path"] if t["kind"] == "exe" else f"jogo Steam {t['steam_appid']}"
-            self.info.config(text=f"Trocado em {rec.created}.\nDestino: {dest}\nOriginal em: {rec.backup_dir}")
+            self.info.config(text=f"{game.path}\nOriginal em: {rec.backup_dir}")
         else:
             exes = find_executables(game.path)
             self.exe_combo["values"] = exes
             self.host_exe.set(exes[0] if exes else "")
             self.info.config(text=f"{game.path}" + ("" if exes else "\nNenhum .exe encontrado."))
-        self.btn_apply.state(["disabled"] if rec else ["!disabled"])
         self.btn_restore.state(["!disabled"] if rec else ["disabled"])
+        self._sync_target_buttons()
 
     # ---------- ações ----------
     def _browse(self):
@@ -264,15 +317,30 @@ class App(tk.Tk):
             raise swap.SwapError("Informe o AppID do jogo de destino.")
         return Target(kind="steam", steam_appid=int(m.group(1)))
 
-    def _apply(self):
+    def _create_shortcut_for(self, appid: int, host_name: str, target: Target):
+        """Compila o seletor e cria o .lnk; falha aqui não desfaz o destino já adicionado."""
+        selector_exe = paths.selectors_dir() / f"{appid}_{target.id}.exe"
+        build_selector(appid, target.id, paths.marker_file(appid), selector_exe)
+        link_name = f"{shortcuts.safe_filename(host_name)} - {shortcuts.safe_filename(target.name)}.lnk"
+        link_path = shortcuts.desktop_dir() / link_name
+        shortcuts.create_shortcut(link_path, selector_exe, description=f"SteamSwap: {host_name} → {target.name}")
+        swap.set_target_shortcut(appid, target.id, str(link_path))
+
+    def _add_target(self):
         appid = self._selected_id()
         if appid is None:
             return messagebox.showinfo("SteamSwap", "Selecione o jogo hospedeiro.")
         game = self.by_id[appid]
-        if not self.host_exe.get():
+        already_swapped = appid in self.records
+        if not already_swapped and not self.host_exe.get():
             return messagebox.showerror("SteamSwap", "Escolha o executável que a Steam abre.")
         try:
             target = self._build_target()
+        except swap.SwapError as e:
+            return messagebox.showerror("SteamSwap", str(e))
+        name = self.target_name.get().strip() or "Destino"
+
+        if not already_swapped:
             if not messagebox.askyesno(
                     "Confirmar troca",
                     f"A pasta de '{game.name}' será renomeada para '{game.path.name}{swap.BACKUP_SUFFIX}' "
@@ -280,15 +348,75 @@ class App(tk.Tk):
                     f"Se a Steam atualizar ou verificar esse jogo, a troca é desfeita "
                     f"(desative a atualização automática dele nas propriedades).\n\nContinuar?"):
                 return
-            self.config(cursor="watch")
-            self.update_idletasks()
-            swap.apply_swap(game, self.host_exe.get(), target)
+
+        self.config(cursor="watch")
+        self.update_idletasks()
+        try:
+            if already_swapped:
+                target = swap.add_target(appid, name, target)
+            else:
+                rec = swap.apply_swap(game, self.host_exe.get(), name, target)
+                target = Target.from_dict(rec.targets[rec.default_id])
         except swap.SwapError as e:
-            messagebox.showerror("SteamSwap", str(e))
-            return
-        finally:
             self.config(cursor="")
-        self._after_change(f"'{game.name}' agora abre o destino escolhido.")
+            return messagebox.showerror("SteamSwap", str(e))
+        self.config(cursor="")
+
+        shortcut_warning = ""
+        if self.make_shortcut.get():
+            try:
+                self._create_shortcut_for(appid, game.name, target)
+            except (RuntimeError, OSError) as e:
+                shortcut_warning = f"\n\nO destino foi adicionado, mas o atalho não pôde ser criado:\n{e}"
+
+        self._after_change(f"'{name}' adicionado a '{game.name}'.{shortcut_warning}")
+        if shortcut_warning:
+            messagebox.showwarning("SteamSwap", shortcut_warning.strip())
+
+    def _selected_target_id(self):
+        s = self.targets_tree.selection()
+        return s[0] if s else None
+
+    def _set_default_target(self):
+        appid = self._selected_id()
+        tid = self._selected_target_id()
+        if appid is None or tid is None:
+            return
+        try:
+            swap.set_default_target(appid, tid)
+        except swap.SwapError as e:
+            return messagebox.showerror("SteamSwap", str(e))
+        self._after_change("Destino padrão atualizado.")
+
+    def _remove_target(self):
+        appid = self._selected_id()
+        tid = self._selected_target_id()
+        if appid is None or tid is None:
+            return
+        rec = self.records.get(appid)
+        name = rec.targets[tid]["name"] if rec and tid in rec.targets else tid
+        if not messagebox.askyesno("SteamSwap", f"Remover o destino '{name}'? O atalho dele, se houver, também é apagado."):
+            return
+        try:
+            swap.remove_target(appid, tid)
+        except swap.SwapError as e:
+            return messagebox.showerror("SteamSwap", str(e))
+        self._after_change(f"Destino '{name}' removido.")
+
+    def _recreate_shortcut(self):
+        appid = self._selected_id()
+        tid = self._selected_target_id()
+        if appid is None or tid is None:
+            return
+        rec = self.records.get(appid)
+        if not rec or tid not in rec.targets:
+            return
+        target = Target.from_dict(rec.targets[tid])
+        try:
+            self._create_shortcut_for(appid, rec.name, target)
+        except (RuntimeError, OSError) as e:
+            return messagebox.showerror("SteamSwap", f"Não consegui criar o atalho:\n{e}")
+        self._after_change(f"Atalho de '{target.name}' recriado na Área de Trabalho.")
 
     def _restore(self):
         appid = self._selected_id()

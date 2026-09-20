@@ -13,6 +13,23 @@ Sem dependências além do Python (Tkinter) e do `csc.exe` que já vem no Window
 - Estado das trocas: `%APPDATA%\SteamSwap\swaps.json`.
 - Se a Steam atualizar/verificar o jogo hospedeiro, a troca é desfeita; desative a atualização automática dele.
 
+## Vários destinos por hospedeiro
+
+Um mesmo hospedeiro pode ter vários destinos cadastrados ("+ Adicionar destino").
+Cada um vira um **atalho de verdade (.lnk) na Área de Trabalho** (dá pra desligar
+essa opção por destino). Clicar num atalho específico marca "abra este destino
+agora" (arquivo em `%APPDATA%\SteamSwap\next_target\<appid>.txt`) e manda a
+Steam abrir o hospedeiro; o launcher lê essa marca uma única vez.
+
+Se você abrir o jogo direto pela Steam (sem passar por um atalho específico) e
+houver mais de um destino, aparece uma telinha para escolher, com o destino
+padrão pré-selecionado e um tempo limite — se ninguém decidir, ela mesma abre
+o padrão, pra nunca travar esperando teclado/mouse no modo Big Picture.
+
+"Remover" tira um destino (e apaga o atalho dele); precisa sobrar pelo menos
+um — pra tirar o último, use "Restaurar original". "Definir padrão" muda qual
+deles abre quando não há atalho específico envolvido.
+
 ## Filtro de compatibilidade
 
 A lista de jogos hospedeiros tem um filtro, ligado por padrão, que mostra só jogos
