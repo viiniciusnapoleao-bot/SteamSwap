@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
+from .paths import data_dir
 from .steam import Game, is_app_running
 from .stub import Target, build_stub
 
@@ -42,8 +43,7 @@ class SwapRecord:
 
 
 def state_file() -> Path:
-    base = os.environ.get("STEAMSWAP_HOME") or os.path.join(os.environ.get("APPDATA", str(Path.home())), "SteamSwap")
-    return Path(base) / "swaps.json"
+    return data_dir() / "swaps.json"
 
 
 def load_records() -> Dict[int, SwapRecord]:

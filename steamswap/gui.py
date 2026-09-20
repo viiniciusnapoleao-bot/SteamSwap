@@ -1,11 +1,15 @@
 """Interface Tkinter do SteamSwap."""
+import queue
 import re
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from . import swap
+from . import compat, swap
 from .steam import find_steam_path, installed_games, find_executables
 from .stub import Target
+
+COMPAT_PACE_SECONDS = 0.3  # intervalo entre consultas à Steam Store, para não estourar o limite de requisições
 
 
 class App(tk.Tk):
@@ -19,6 +23,11 @@ class App(tk.Tk):
         self.games = installed_games(self.steam) if self.steam else []
         self.by_id = {g.appid: g for g in self.games}
         self.records = swap.load_records()
+        self.compat_cache = compat.load_cache()
+        self._stop_compat = False
+        self._closed = False
+        self._compat_thread = None
+        self._compat_queue: "queue.Queue" = queue.Queue()
 
         self.search = tk.StringVar()
         self.host_exe = tk.StringVar()
@@ -27,12 +36,17 @@ class App(tk.Tk):
         self.steam_target = tk.StringVar()
         self.args = tk.StringVar()
         self.follow = tk.BooleanVar(value=True)
+        self.filter_compat = tk.BooleanVar(value=True)
+        self.compat_status = tk.StringVar(value="")
         self.status = tk.StringVar(
             value="Steam não encontrada." if not self.steam else f"Steam: {self.steam}  ·  {len(self.games)} jogos")
 
         self._build()
         self._refresh_list()
         self.search.trace_add("write", lambda *_: self._refresh_list())
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._start_compat_scan()
+        self._poll_compat_queue()
 
     # ---------- layout ----------
     def _build(self):
@@ -42,8 +56,18 @@ class App(tk.Tk):
         ttk.Label(left, text="1. Jogo hospedeiro (o que a Steam vai abrir)").pack(anchor="w")
         ttk.Entry(left, textvariable=self.search).pack(fill="x", pady=4)
 
-        self.tree = ttk.Treeview(left, columns=("name", "appid", "state"), show="headings", selectmode="browse")
-        for col, text, w in (("name", "Jogo", 260), ("appid", "AppID", 70), ("state", "Estado", 110)):
+        filt_row = ttk.Frame(left)
+        filt_row.pack(fill="x", pady=(0, 4))
+        ttk.Checkbutton(filt_row, text="Só controle total + Remote Play Together", variable=self.filter_compat,
+                        command=self._refresh_list).pack(side="left")
+        ttk.Button(filt_row, text="Verificar de novo",
+                   command=lambda: self._start_compat_scan(force=True)).pack(side="right")
+        ttk.Label(left, textvariable=self.compat_status, foreground="#666").pack(anchor="w")
+
+        self.tree = ttk.Treeview(left, columns=("name", "appid", "compat", "state"), show="headings",
+                                 selectmode="browse")
+        for col, text, w in (("name", "Jogo", 220), ("appid", "AppID", 60), ("compat", "Controle/RPT", 110),
+                            ("state", "Estado", 90)):
             self.tree.heading(col, text=text)
             self.tree.column(col, width=w, anchor="w")
         sb = ttk.Scrollbar(left, command=self.tree.yview)
@@ -110,16 +134,91 @@ class App(tk.Tk):
         else:
             self.steam_row.pack(fill="x", padx=8, pady=4)
 
+    # ---------- compatibilidade (Steam Store: controle total + Remote Play Together) ----------
+    def _compat_label(self, appid: int) -> str:
+        c = self.compat_cache.get(appid)
+        if c is None:
+            return "verificando…"
+        if c.error:
+            return "erro na consulta"
+        if c.full_controller and c.remote_play_together:
+            return "Controle + RPT"
+        if c.full_controller:
+            return "Só controle"
+        if c.remote_play_together:
+            return "Só RPT"
+        return "Não"
+
+    def _compat_ok(self, appid: int) -> bool:
+        c = self.compat_cache.get(appid)
+        return c is not None and not c.error and c.full_controller and c.remote_play_together
+
+    def _start_compat_scan(self, force: bool = False):
+        if self._compat_thread is not None and self._compat_thread.is_alive():
+            return  # já tem uma varredura rodando; evita duas threads mexendo no mesmo cache
+        appids = [g.appid for g in self.games]
+        todo = [a for a in appids if force or a not in self.compat_cache or self.compat_cache[a].stale]
+        if not todo:
+            self.compat_status.set("Compatibilidade verificada (Steam Store).")
+            return
+        self._stop_compat = False
+        total = len(todo)
+        self.compat_status.set(f"Verificando compatibilidade na Steam Store… 0/{total}")
+
+        # A thread só empilha resultados (thread-safe); nada aqui toca o Tk diretamente —
+        # chamar self.after()/widgets fora da thread principal trava o Tkinter.
+        def worker():
+            compat.refresh_many(
+                todo, self.compat_cache, force=force, pace=COMPAT_PACE_SECONDS,
+                on_result=lambda appid, result, i, n: self._compat_queue.put((appid, result, i, n)),
+                should_stop=lambda: self._stop_compat)
+
+        self._compat_thread = threading.Thread(target=worker, daemon=True)
+        self._compat_thread.start()
+
+    def _poll_compat_queue(self):
+        if self._closed:
+            return
+        while True:
+            try:
+                appid, result, i, total = self._compat_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._apply_compat(appid, result, i, total)
+        self.after(150, self._poll_compat_queue)
+
+    def _apply_compat(self, appid, result, i, total):
+        self.compat_cache[appid] = result
+        try:
+            compat.save_cache(self.compat_cache)
+        except OSError:
+            pass  # não é crítico: só significa consultar de novo na próxima abertura
+        self.compat_status.set(
+            "Compatibilidade verificada (Steam Store)." if i >= total
+            else f"Verificando compatibilidade na Steam Store… {i}/{total}")
+        self._refresh_list()
+        if self._selected_id() == appid:
+            self._on_select()
+
+    def _on_close(self):
+        self._stop_compat = True
+        self._closed = True
+        self.destroy()
+
     # ---------- dados ----------
     def _refresh_list(self):
         q = self.search.get().strip().lower()
+        only_compat = self.filter_compat.get()
         sel = self._selected_id()
         self.tree.delete(*self.tree.get_children())
         for g in self.games:
             if q and q not in g.name.lower() and q not in str(g.appid):
                 continue
+            if only_compat and not self._compat_ok(g.appid):
+                continue
             state = "TROCADO" if g.appid in self.records else ""
-            self.tree.insert("", "end", iid=str(g.appid), values=(g.name, g.appid, state))
+            self.tree.insert("", "end", iid=str(g.appid),
+                             values=(g.name, g.appid, self._compat_label(g.appid), state))
         if sel is not None and self.tree.exists(str(sel)):
             self.tree.selection_set(str(sel))
         self.steam_combo["values"] = [f"{g.name} ({g.appid})" for g in self.games]
