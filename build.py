@@ -22,7 +22,16 @@ def main():
         sys.executable, "-m", "nuitka",
         "--onefile",
         "--windows-console-mode=disable",
-        "--enable-plugin=pywebview",
+        # Bug do plugin pywebview do Nuitka: sua lista de módulos permitidos
+        # pra Windows (winforms/edgechromium/edgehtml/mshtml/cef) esquece
+        # webview.platforms.win32, que winforms.py importa incondicionalmente
+        # -- e o plugin não aceita ser sobreposto (dá erro fatal de conflito
+        # se a gente tentar incluir esse módulo manualmente com ele ativo).
+        # Desabilitamos o plugin e incluímos os módulos de plataforma à mão.
+        "--disable-plugins=pywebview",
+        "--include-module=webview.platforms.win32",
+        "--include-module=webview.platforms.winforms",
+        "--include-module=webview.platforms.edgechromium",
         "--include-data-dir=steamswap/webui=steamswap/webui",
         "--output-dir=" + str(DIST),
         "--output-filename=SteamSwap.exe",
