@@ -57,3 +57,28 @@ plano, sem travar a interface. O resultado fica em `%APPDATA%\SteamSwap\compat_c
 por 30 dias; "Verificar de novo" força uma nova consulta. Precisa de internet só para
 essa checagem — sem ela, os jogos ainda não verificados ficam ocultos com o filtro ligado
 (desligue o filtro para ver todos).
+
+## Build e auto-atualização
+
+    python build.py
+
+Compila `dist\SteamSwap.exe` com o [Nuitka](https://nuitka.net/) (modo `--onefile`,
+sem console, `webui/` embutido). A versão vem de `steamswap/version.py`, fonte
+única lida também pelo atualizador.
+
+O `.exe` compilado verifica sozinho, na abertura, se há uma versão mais nova
+publicada nas [Releases do GitHub](https://github.com/viiniciusnapoleao-bot/SteamSwap/releases)
+deste repositório (`steamswap/version.py:GITHUB_REPO`) e mostra um aviso na
+interface se houver. Rodando via `python run.py` a partir do código-fonte essa
+checagem não faz nada — não há `.exe` pra substituir.
+
+Pra publicar uma versão:
+1. Suba `APP_VERSION` em `steamswap/version.py`.
+2. `python build.py`.
+3. Crie uma Release no GitHub com tag `v<versão>` (ex.: `v1.1.0`) e anexe
+   `dist\SteamSwap.exe` (o nome do arquivo importa — é ele que o atualizador procura).
+
+Ao aceitar a atualização, o SteamSwap baixa o `.exe` novo, compila um pequeno
+relançador em C# (mesmo mecanismo do launcher/seletor) que espera este processo
+fechar, copia o arquivo novo por cima do antigo e reabre — o Windows não deixa
+um programa sobrescrever a si mesmo em execução.

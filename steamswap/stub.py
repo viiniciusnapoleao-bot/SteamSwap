@@ -4,14 +4,13 @@
 - os pequenos seletores apontados pelos atalhos da área de trabalho, que
   marcam qual destino usar e pedem à Steam para abrir o hospedeiro.
 """
-import os
-import shutil
-import subprocess
-import tempfile
 import uuid
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import List
+
+from .csc import cs_string as _cs_string
+from .csc import compile_cs
 
 DEFAULT_PICKER_TIMEOUT_MS = 12000
 
@@ -298,19 +297,6 @@ def prepared(target: Target, name: str) -> Target:
     return replace(target, id=new_id(), name=(name or "").strip() or "Destino", shortcut="")
 
 
-def _cs_string(s: str) -> str:
-    return str(s).replace('"', '""')
-
-
-def find_csc() -> Path:
-    windir = Path(os.environ.get("WINDIR", r"C:\Windows"))
-    for fw in ("Framework64", "Framework"):
-        p = windir / "Microsoft.NET" / fw / "v4.0.30319" / "csc.exe"
-        if p.is_file():
-            return p
-    raise RuntimeError("csc.exe (.NET Framework 4) não encontrado neste Windows")
-
-
 def _target_literal(t: Target) -> str:
     return (
         'new Tgt { Id = @"%s", Name = @"%s", Kind = @"%s", ExePath = @"%s", '
@@ -343,31 +329,14 @@ def render_selector_source(host_appid: int, target_id: str, marker_path) -> str:
     return src
 
 
-def _compile(source: str, out_path: Path, refs=()) -> Path:
-    out_path = Path(out_path)
-    with tempfile.TemporaryDirectory(prefix="steamswap_") as tmp:
-        cs = Path(tmp) / "src.cs"
-        exe = Path(tmp) / "out.exe"
-        cs.write_text(source, encoding="utf-8-sig")
-        cmd = [str(find_csc()), "/nologo", "/target:winexe", "/optimize+", "/platform:anycpu"]
-        cmd += [f"/r:{r}" for r in refs]
-        cmd += [f"/out:{exe}", str(cs)]
-        proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
-        if proc.returncode != 0 or not exe.is_file():
-            raise RuntimeError("Falha ao compilar:\n" + (proc.stdout + proc.stderr).strip())
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(exe, out_path)
-    return out_path
-
-
 def build_stub(targets: List[Target], default_id: str, marker_path, out_path,
                picker_timeout_ms: int = DEFAULT_PICKER_TIMEOUT_MS) -> Path:
     for t in targets:
         t.validate()
     src = render_source(targets, default_id, str(marker_path), picker_timeout_ms)
-    return _compile(src, out_path, refs=("System.Windows.Forms.dll", "System.Drawing.dll"))
+    return compile_cs(src, out_path, refs=("System.Windows.Forms.dll", "System.Drawing.dll"))
 
 
 def build_selector(host_appid: int, target_id: str, marker_path, out_path) -> Path:
     src = render_selector_source(host_appid, target_id, str(marker_path))
-    return _compile(src, out_path)
+    return compile_cs(src, out_path)

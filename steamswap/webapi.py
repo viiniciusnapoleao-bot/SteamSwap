@@ -21,13 +21,15 @@ tudo que não deve virar API.
 """
 import json
 import threading
+import time
 from typing import List
 
 import webview
 
-from . import compat, paths, shortcuts, swap
+from . import compat, paths, shortcuts, swap, updater
 from .steam import find_steam_path, installed_games, find_executables
 from .stub import Target, build_selector
+from .version import APP_VERSION
 
 COMPAT_PACE_SECONDS = 0.3  # intervalo entre consultas à Steam Store, para não estourar o limite de requisições
 
@@ -67,6 +69,7 @@ class Api:
         self._compat_cache = compat.load_cache()
         self._compat_thread = None
         self._stop_compat = False
+        self._update_thread = None
 
     def bind(self, window):
         self._window = window
@@ -74,7 +77,8 @@ class Api:
 
     # ---------- estado geral ----------
     def status(self) -> dict:
-        return {"steamPath": str(self._steam) if self._steam else None, "gameCount": len(self._games)}
+        return {"steamPath": str(self._steam) if self._steam else None, "gameCount": len(self._games),
+                "appVersion": APP_VERSION}
 
     def list_games(self) -> List[dict]:
         records = swap.load_records()
@@ -190,6 +194,43 @@ class Api:
             return {"ok": False, "needsForce": True, "extraFiles": e.files}
         except swap.SwapError as e:
             return {"ok": False, "error": str(e)}
+        return {"ok": True}
+
+    # ---------- atualização (GitHub Releases) ----------
+    def check_update(self) -> dict:
+        """None/sem novidade -> {"available": False}. Não faz nada se rodando via código-fonte."""
+        info = updater.check_for_update()
+        if info is None:
+            return {"available": False}
+        return {"available": True, "version": info.version, "notes": info.notes, "size": info.size}
+
+    def apply_update(self) -> dict:
+        if self._update_thread is not None and self._update_thread.is_alive():
+            return {"ok": True, "alreadyRunning": True}
+        info = updater.fetch_latest()
+        if info is None or not updater.is_newer(info.version):
+            return {"ok": False, "error": "Nenhuma atualização disponível."}
+
+        def worker():
+            def progress(done, total):
+                pct = int(done * 100 / total) if total else 0
+                self._push("onUpdateProgress", {"done": done, "total": total, "pct": pct})
+
+            try:
+                path = updater.download(info, on_progress=progress)
+                updater.apply(path)
+            except (RuntimeError, OSError) as e:
+                self._push("onUpdateFailed", {"error": str(e)})
+                return
+            self._push("onUpdateRestarting", {})
+            time.sleep(0.8)  # dá tempo da página mostrar a mensagem antes da janela fechar
+            try:
+                self._window.destroy()
+            except Exception:
+                pass
+
+        self._update_thread = threading.Thread(target=worker, daemon=True)
+        self._update_thread.start()
         return {"ok": True}
 
     # ---------- compatibilidade (Steam Store: controle total + Remote Play Together) ----------

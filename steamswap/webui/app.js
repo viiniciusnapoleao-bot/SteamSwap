@@ -338,6 +338,52 @@ function setStatus(text) {
   document.getElementById("statusBar").textContent = text;
 }
 
+// ---------- atualização ----------
+let updateInfo = null;
+let updateDismissed = false;
+
+function showUpdateBanner(info) {
+  updateInfo = info;
+  if (updateDismissed) return;
+  const banner = document.getElementById("updateBanner");
+  document.getElementById("updateBannerText").textContent =
+    `Nova versão disponível: v${info.version}. ` + (info.notes ? info.notes.split("\n")[0] : "");
+  banner.classList.remove("hidden");
+}
+
+async function checkForUpdate() {
+  const r = await api("check_update");
+  if (r.available) showUpdateBanner(r);
+}
+
+async function onApplyUpdate() {
+  const btn = document.getElementById("btnApplyUpdate");
+  btn.disabled = true;
+  btn.textContent = "Baixando… 0%";
+  const r = await api("apply_update");
+  if (!r.ok) {
+    toast(r.error || "Não foi possível atualizar.", true);
+    btn.disabled = false;
+    btn.textContent = "Atualizar agora";
+  }
+  // sucesso: onUpdateProgress/onUpdateRestarting cuidam do resto (a janela fecha sozinha)
+}
+
+window.onUpdateProgress = (payload) => {
+  const btn = document.getElementById("btnApplyUpdate");
+  if (btn) btn.textContent = `Baixando… ${payload.pct}%`;
+};
+window.onUpdateFailed = (payload) => {
+  toast(payload.error || "Falha ao atualizar.", true);
+  const btn = document.getElementById("btnApplyUpdate");
+  if (btn) { btn.disabled = false; btn.textContent = "Atualizar agora"; }
+};
+window.onUpdateRestarting = () => {
+  document.getElementById("updateBannerText").textContent = "Atualizando e reiniciando…";
+  document.getElementById("btnDismissUpdate").classList.add("hidden");
+  document.getElementById("btnApplyUpdate").disabled = true;
+};
+
 // ---------- compatibilidade: eventos empurrados pelo Python ----------
 window.onCompatProgress = (payload) => {
   document.getElementById("compatStatus").textContent = payload.statusText;
@@ -363,9 +409,15 @@ async function init() {
     renderGameList();
   });
   document.getElementById("btnRescan").addEventListener("click", () => api("start_compat_scan", true));
+  document.getElementById("btnApplyUpdate").addEventListener("click", onApplyUpdate);
+  document.getElementById("btnDismissUpdate").addEventListener("click", () => {
+    updateDismissed = true;
+    document.getElementById("updateBanner").classList.add("hidden");
+  });
 
   const status = await api("status");
   const steamStatus = document.getElementById("steamStatus");
+  document.getElementById("appVersion").textContent = status.appVersion ? `v${status.appVersion}` : "";
   if (status.steamPath) {
     steamStatus.textContent = `${status.steamPath} · ${status.gameCount} jogos`;
     setStatus(`Steam: ${status.steamPath} · ${status.gameCount} jogos`);
@@ -377,6 +429,7 @@ async function init() {
   state.steamOptions = await api("steam_game_options");
   await refreshGames();
   api("start_compat_scan", false);
+  checkForUpdate();
 }
 
 window.addEventListener("pywebviewready", init);

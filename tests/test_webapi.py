@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from steamswap import compat, swap, webapi
+from steamswap import compat, swap, updater, webapi
 from steamswap.steam import Game
 
 CMD = Path(os.environ["WINDIR"]) / "System32" / "cmd.exe"
@@ -61,7 +61,9 @@ class FakeSteamApi(unittest.TestCase):
 
     # ---------- status / listagem ----------
     def test_status_and_list_games(self):
-        self.assertEqual(self.api.status(), {"steamPath": str(self.steam), "gameCount": 1})
+        status = self.api.status()
+        self.assertEqual(status["steamPath"], str(self.steam))
+        self.assertEqual(status["gameCount"], 1)
         games = self.api.list_games()
         self.assertEqual(games, [{"appid": 555, "name": "Host Game", "compat": "checking",
                                   "compatOk": False, "swapped": False}])
@@ -191,6 +193,48 @@ class FakeSteamApi(unittest.TestCase):
         games = self.api.list_games()
         self.assertEqual(games[0]["compat"], "full")
         self.assertTrue(games[0]["compatOk"])
+
+    # ---------- atualização ----------
+    def test_status_includes_app_version(self):
+        from steamswap.version import APP_VERSION
+        self.assertEqual(self.api.status()["appVersion"], APP_VERSION)
+
+    def test_check_update_none_available(self):
+        with patch.object(updater, "check_for_update", return_value=None):
+            self.assertEqual(self.api.check_update(), {"available": False})
+
+    def test_check_update_available(self):
+        info = updater.UpdateInfo("9.9.9", "novidades", "https://x", 123)
+        with patch.object(updater, "check_for_update", return_value=info):
+            r = self.api.check_update()
+        self.assertEqual(r, {"available": True, "version": "9.9.9", "notes": "novidades", "size": 123})
+
+    def test_apply_update_no_update_available(self):
+        with patch.object(updater, "fetch_latest", return_value=None):
+            r = self.api.apply_update()
+        self.assertFalse(r["ok"])
+
+    def test_apply_update_downloads_and_applies(self):
+        info = updater.UpdateInfo("9.9.9", "", "https://x", 1)
+        calls = []
+        with patch.object(updater, "fetch_latest", return_value=info), \
+             patch.object(updater, "is_newer", return_value=True), \
+             patch.object(updater, "download", return_value=Path("C:/fake/new.exe")) as m_dl, \
+             patch.object(updater, "apply", side_effect=lambda p: calls.append(p)):
+            r = self.api.apply_update()
+            self.assertTrue(r["ok"])
+            self.api._update_thread.join(timeout=5)
+        m_dl.assert_called_once()
+        self.assertEqual(calls, [Path("C:/fake/new.exe")])
+
+    def test_apply_update_download_failure_does_not_raise(self):
+        info = updater.UpdateInfo("9.9.9", "", "https://x", 1)
+        with patch.object(updater, "fetch_latest", return_value=info), \
+             patch.object(updater, "is_newer", return_value=True), \
+             patch.object(updater, "download", side_effect=OSError("sem espaço em disco")):
+            r = self.api.apply_update()
+            self.assertTrue(r["ok"])  # já virou uma thread em segundo plano
+            self.api._update_thread.join(timeout=5)  # não deve levantar/travar
 
 
 class ApiExposureShapeTests(unittest.TestCase):
