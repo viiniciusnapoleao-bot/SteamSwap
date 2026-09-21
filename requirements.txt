@@ -1,0 +1,4 @@
+# A lógica (steam.py, swap.py, stub.py, compat.py, shortcuts.py) usa só a
+# biblioteca padrão do Python. A interface (webapi.py, webapp.py, webui/)
+# precisa do pywebview:
+pywebview>=6.0

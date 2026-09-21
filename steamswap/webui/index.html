@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SteamSwap</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">steam<span>swap</span></div>
+      <div class="topbar-status" id="steamStatus">carregando…</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel games-panel">
+        <div class="panel-head">
+          <input id="search" type="text" placeholder="Buscar jogo hospedeiro…" autocomplete="off">
+        </div>
+        <div class="filter-row">
+          <label class="checkbox">
+            <input type="checkbox" id="filterCompat" checked>
+            <span>Só controle total + Remote Play Together</span>
+          </label>
+          <button class="btn btn-ghost btn-small" id="btnRescan">Verificar de novo</button>
+        </div>
+        <div class="compat-status" id="compatStatus"></div>
+        <div class="game-list" id="gameList"></div>
+      </section>
+
+      <section class="panel detail-panel">
+        <div class="empty-state" id="emptyState">
+          <p>Selecione, à esquerda, o jogo da Steam que vai servir de hospedeiro.</p>
+        </div>
+        <div id="detailContent"></div>
+      </section>
+    </main>
+
+    <footer class="statusbar" id="statusBar"></footer>
+  </div>
+
+  <div class="modal-backdrop hidden" id="modalBackdrop">
+    <div class="modal">
+      <h3 id="modalTitle"></h3>
+      <div id="modalBody" class="modal-body"></div>
+      <div class="modal-actions" id="modalActions"></div>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

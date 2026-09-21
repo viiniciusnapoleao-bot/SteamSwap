@@ -2,10 +2,15 @@
 
 Faz um jogo da Steam abrir outro programa/jogo no lugar, para herdar o Steam Input (controle), overlay etc.
 
+    pip install -r requirements.txt
     python run.py
     python -m unittest discover -s tests
 
-Sem dependências além do Python (Tkinter) e do `csc.exe` que já vem no Windows.
+A lógica (`steam.py`, `swap.py`, `stub.py`, `compat.py`, `shortcuts.py`) usa só a biblioteca
+padrão do Python, mais o `csc.exe` que já vem no Windows. A interface usa
+[pywebview](https://pywebview.flowrl.com/) (HTML/CSS/JS num `WebView2`, com tema escuro no
+estilo da Steam) — daí a única dependência externa do projeto. As páginas estão em
+`steamswap/webui/`; a ponte Python↔JS é `steamswap/webapi.py`.
 
 - A troca renomeia a pasta do jogo para `<pasta>.steamswap-bak` e coloca um launcher mínimo no lugar do exe que a Steam abre.
 - O launcher espera o destino fechar (e, opcionalmente, qualquer processo da pasta do destino), para a Steam manter a sessão ativa.
@@ -29,6 +34,18 @@ o padrão, pra nunca travar esperando teclado/mouse no modo Big Picture.
 "Remover" tira um destino (e apaga o atalho dele); precisa sobrar pelo menos
 um — pra tirar o último, use "Restaurar original". "Definir padrão" muda qual
 deles abre quando não há atalho específico envolvido.
+
+## Nota técnica: atributos de `Api`
+
+Tudo que `webapi.Api` guarda (janela, cache, lista de jogos...) tem nome começando
+com `_`. Isso não é estilo — é necessário: o pywebview monta a lista de métodos
+expostos ao JS varrendo com `dir()` os atributos *públicos* do objeto e, para
+qualquer um que não seja um método, desce recursivamente dentro dele. Um atributo
+público guardando a própria `Window` faz essa varredura cair em propriedades .NET
+(`native.AccessibilityObject.Bounds.Empty...`) que devolvem um objeto novo a cada
+acesso — e como a trava de recursão do pywebview é por `id()`, isso nunca detecta
+o ciclo e estoura a pilha, travando a ponte JS↔Python inteira sem erro visível na
+página. `tests/test_webapi.py::ApiExposureShapeTests` garante que isso não volta.
 
 ## Filtro de compatibilidade
 

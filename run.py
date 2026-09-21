@@ -1,4 +1,4 @@
-from steamswap.gui import main
+from steamswap.webapp import main
 
 if __name__ == "__main__":
     main()
